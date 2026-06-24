@@ -1,0 +1,203 @@
+===================================================
+ARQUIVO: projeto7/.gitignore
+===================================================
+data/*.csv
+outputs/*.png
+outputs/*.csv
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+
+
+===================================================
+ARQUIVO: projeto7/README.md
+===================================================
+# Análise do ENEM por Estado
+
+Análise dos microdados do ENEM olhando pra diferença de desempenho entre estados, entre escola pública e privada, e entre os sexos.
+
+## Perguntas que o projeto responde
+- Quais estados têm a maior média no ENEM?
+- Qual a diferença de nota entre escola pública e privada?
+- Como as notas de redação se distribuem?
+- Tem diferença de desempenho entre os sexos?
+
+## Tecnologias usadas
+MySQL e Python (Pandas, Seaborn)
+
+## Estrutura
+```
+projeto7/
+├── sql/
+├── scripts/
+├── data/
+└── outputs/
+```
+
+## Como rodar
+Baixa os microdados do ENEM no site do INEP, salva uma amostra (uns 100 mil registros já é suficiente) em `data/microdados_enem.csv` e roda:
+
+```
+pip install -r requirements.txt
+python scripts/analise.py
+```
+
+Fonte: https://www.gov.br/inep/pt-br/acesso-a-informacao/dados-abertos/microdados/enem
+
+
+===================================================
+ARQUIVO: projeto7/data/README.md
+===================================================
+baixa os microdados aqui: https://www.gov.br/inep/pt-br/acesso-a-informacao/dados-abertos/microdados/enem
+
+salva como: microdados_enem.csv (uma amostra ja serve, nao precisa do arquivo completo)
+
+
+===================================================
+ARQUIVO: projeto7/outputs/.gitkeep
+===================================================
+
+
+===================================================
+ARQUIVO: projeto7/requirements.txt
+===================================================
+pandas
+matplotlib
+seaborn
+
+
+===================================================
+ARQUIVO: projeto7/scripts/analise.py
+===================================================
+# analise enem - diferenca de nota por estado e tipo de escola
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+sns.set_style("whitegrid")
+
+colunas = ["SG_UF_PROVA", "TP_SEXO", "TP_ESCOLA",
+           "NU_NOTA_CN", "NU_NOTA_CH", "NU_NOTA_LC", "NU_NOTA_MT", "NU_NOTA_REDACAO"]
+
+df = pd.read_csv("data/microdados_enem.csv", sep=";", encoding="latin-1",
+                  usecols=colunas, nrows=100_000)
+
+df.columns = ["estado", "sexo", "tipo_escola", "nota_cn", "nota_ch",
+              "nota_lc", "nota_mt", "nota_redacao"]
+
+df = df[df["nota_mt"].notna() & df["nota_redacao"].notna()].copy()
+df["media_geral"] = df[["nota_cn", "nota_ch", "nota_lc", "nota_mt", "nota_redacao"]].mean(axis=1)
+df["tipo_escola"] = df["tipo_escola"].map({1: "Publica", 2: "Privada"})
+
+# media por estado
+por_estado = (
+    df.groupby("estado")["media_geral"]
+    .mean()
+    .round(1)
+    .sort_values(ascending=False)
+    .reset_index()
+)
+print(por_estado)
+
+plt.figure(figsize=(12, 6))
+plt.bar(por_estado["estado"], por_estado["media_geral"], color="#4a7fc1")
+plt.title("Media geral do ENEM por estado")
+plt.tight_layout()
+plt.savefig("outputs/media_por_estado.png", dpi=150)
+plt.close()
+
+# publica vs privada
+escola = df[df["tipo_escola"].notna()].groupby("tipo_escola")[["nota_mt", "nota_redacao"]].mean().round(1)
+print(escola)
+
+escola.plot(kind="bar", figsize=(7, 5))
+plt.title("Publica vs privada")
+plt.tight_layout()
+plt.savefig("outputs/publica_privada.png", dpi=150)
+plt.close()
+
+por_estado.to_csv("outputs/media_por_estado.csv", index=False)
+
+
+===================================================
+ARQUIVO: projeto7/sql/01_schema.sql
+===================================================
+CREATE DATABASE IF NOT EXISTS analise_enem;
+USE analise_enem;
+
+CREATE TABLE candidatos (
+    nu_inscricao      BIGINT PRIMARY KEY,
+    sg_uf_prova       CHAR(2),
+    tp_sexo           CHAR(1),
+    tp_escola         INT,            -- 1 publica, 2 privada
+    nu_nota_cn        DECIMAL(6,1),
+    nu_nota_ch        DECIMAL(6,1),
+    nu_nota_lc        DECIMAL(6,1),
+    nu_nota_mt        DECIMAL(6,1),
+    nu_nota_redacao   DECIMAL(6,1)
+);
+
+LOAD DATA LOCAL INFILE 'data/enem_amostra.csv'
+INTO TABLE candidatos
+CHARACTER SET utf8mb4
+FIELDS TERMINATED BY ';'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS;
+
+
+===================================================
+ARQUIVO: projeto7/sql/02_queries.sql
+===================================================
+-- media geral por estado
+SELECT
+    sg_uf_prova AS estado,
+    COUNT(*) AS candidatos,
+    ROUND(AVG(nu_nota_mt), 1)      AS media_matematica,
+    ROUND(AVG(nu_nota_redacao), 1) AS media_redacao,
+    ROUND((AVG(nu_nota_mt) + AVG(nu_nota_lc) + AVG(nu_nota_cn)
+           + AVG(nu_nota_ch) + AVG(nu_nota_redacao)) / 5, 1) AS media_geral
+FROM candidatos
+WHERE nu_nota_mt IS NOT NULL AND nu_nota_redacao IS NOT NULL
+GROUP BY sg_uf_prova
+ORDER BY media_geral DESC;
+
+
+-- escola publica x privada
+SELECT
+    CASE tp_escola WHEN 1 THEN 'Publica' WHEN 2 THEN 'Privada' ELSE 'Nao informado' END AS tipo_escola,
+    COUNT(*) AS candidatos,
+    ROUND(AVG(nu_nota_mt), 1)      AS media_matematica,
+    ROUND(AVG(nu_nota_redacao), 1) AS media_redacao
+FROM candidatos
+WHERE nu_nota_mt IS NOT NULL AND tp_escola IN (1, 2)
+GROUP BY tp_escola;
+
+
+-- faixas de nota de redacao
+SELECT
+    CASE
+        WHEN nu_nota_redacao < 400 THEN '0-399'
+        WHEN nu_nota_redacao < 600 THEN '400-599'
+        WHEN nu_nota_redacao < 800 THEN '600-799'
+        WHEN nu_nota_redacao < 900 THEN '800-899'
+        ELSE '900-1000'
+    END AS faixa_nota,
+    COUNT(*) AS quantidade
+FROM candidatos
+WHERE nu_nota_redacao IS NOT NULL
+GROUP BY faixa_nota
+ORDER BY faixa_nota;
+
+
+-- nota media por sexo
+SELECT
+    CASE tp_sexo WHEN 'M' THEN 'Masculino' ELSE 'Feminino' END AS sexo,
+    ROUND(AVG(nu_nota_mt), 1)      AS media_matematica,
+    ROUND(AVG(nu_nota_redacao), 1) AS media_redacao,
+    COUNT(*) AS candidatos
+FROM candidatos
+WHERE nu_nota_mt IS NOT NULL
+GROUP BY tp_sexo;
+
+

@@ -1,0 +1,208 @@
+===================================================
+ARQUIVO: projeto8/.gitignore
+===================================================
+data/*.csv
+outputs/*.png
+outputs/*.csv
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+
+
+===================================================
+ARQUIVO: projeto8/README.md
+===================================================
+# Análise de Acidentes Aéreos no Brasil
+
+Análise dos dados do CENIPA tentando achar padrão nos acidentes aéreos: quais estados têm mais ocorrências, se tem sazonalidade por mês e quais os fatores humanos mais comuns.
+
+## Perguntas que o projeto responde
+- Quais estados concentram mais acidentes?
+- Tem algum mês com mais ocorrência que outro?
+- Quais os fatores humanos que mais aparecem?
+- Como isso evoluiu ano a ano?
+
+## Tecnologias usadas
+MySQL (com uma window function de exemplo) e Python (Pandas, Matplotlib)
+
+## Estrutura
+```
+projeto8/
+├── sql/
+├── scripts/
+├── data/
+└── outputs/
+```
+
+## Como rodar
+Baixa `ocorrencia.csv` e `fator_contribuinte.csv` no dados.gov.br, coloca em `data/` e roda:
+
+```
+pip install -r requirements.txt
+python scripts/analise.py
+```
+
+Fonte: https://dados.gov.br/dados/conjuntos-dados/ocorrencias-aeronauticas-da-aviacao-civil-brasileira
+
+
+===================================================
+ARQUIVO: projeto8/data/README.md
+===================================================
+baixa os dados aqui: https://dados.gov.br/dados/conjuntos-dados/ocorrencias-aeronauticas-da-aviacao-civil-brasileira
+
+precisa de:
+ocorrencia.csv
+fator_contribuinte.csv
+
+
+===================================================
+ARQUIVO: projeto8/outputs/.gitkeep
+===================================================
+
+
+===================================================
+ARQUIVO: projeto8/requirements.txt
+===================================================
+pandas
+matplotlib
+
+
+===================================================
+ARQUIVO: projeto8/scripts/analise.py
+===================================================
+# analise de acidentes aereos no brasil - dados do cenipa
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+ocorrencia = pd.read_csv("data/ocorrencia.csv", sep=";", encoding="utf-8")
+fator = pd.read_csv("data/fator_contribuinte.csv", sep=";", encoding="utf-8")
+
+ocorrencia["data_ocorrencia"] = pd.to_datetime(ocorrencia["ocorrencia_dia"], format="%d/%m/%Y", errors="coerce")
+ocorrencia["mes"] = ocorrencia["data_ocorrencia"].dt.month
+
+acidentes = ocorrencia[ocorrencia["ocorrencia_classificacao"] == "ACIDENTE"].copy()
+
+# acidentes por estado
+por_estado = (
+    acidentes.groupby("uf_ocorrencia")
+    .agg(total=("codigo_ocorrencia", "count"), fatais=("total_fatais", "sum"))
+    .reset_index()
+    .sort_values("total", ascending=False)
+)
+print(por_estado.head(10))
+
+plt.barh(por_estado["uf_ocorrencia"].head(10), por_estado["total"].head(10), color="#4a7fc1")
+plt.gca().invert_yaxis()
+plt.title("Top 10 estados por numero de acidentes")
+plt.tight_layout()
+plt.savefig("outputs/acidentes_por_estado.png", dpi=150)
+plt.close()
+
+# acidentes por mes
+por_mes = acidentes.groupby("mes").size().reset_index(name="total")
+print(por_mes)
+
+plt.bar(por_mes["mes"], por_mes["total"], color="#c96a3a")
+plt.title("Acidentes por mes")
+plt.tight_layout()
+plt.savefig("outputs/acidentes_por_mes.png", dpi=150)
+plt.close()
+
+# fatores humanos mais comuns
+fator_humano = fator[fator["fator_area"] == "FATOR HUMANO"]
+top_fatores = fator_humano["fator_nome"].value_counts().head(10).reset_index()
+top_fatores.columns = ["fator_nome", "ocorrencias"]
+print(top_fatores)
+
+plt.barh(top_fatores["fator_nome"], top_fatores["ocorrencias"], color="#5b7fa6")
+plt.gca().invert_yaxis()
+plt.title("Top 10 fatores humanos")
+plt.tight_layout()
+plt.savefig("outputs/top_fatores_humanos.png", dpi=150)
+plt.close()
+
+por_estado.to_csv("outputs/acidentes_por_estado.csv", index=False)
+
+
+===================================================
+ARQUIVO: projeto8/sql/01_schema.sql
+===================================================
+CREATE DATABASE IF NOT EXISTS acidentes_aereos;
+USE acidentes_aereos;
+
+CREATE TABLE ocorrencia (
+    codigo_ocorrencia   INT PRIMARY KEY,
+    data_ocorrencia     DATE NOT NULL,
+    uf_ocorrencia       CHAR(2),
+    fase_operacao       VARCHAR(40),
+    classificacao       VARCHAR(30),
+    total_fatais        INT DEFAULT 0
+);
+
+CREATE TABLE aeronave (
+    id_aeronave         INT AUTO_INCREMENT PRIMARY KEY,
+    codigo_ocorrencia   INT NOT NULL,
+    tipo_veiculo        VARCHAR(30),
+    fabricante          VARCHAR(50),
+    FOREIGN KEY (codigo_ocorrencia) REFERENCES ocorrencia(codigo_ocorrencia)
+);
+
+CREATE TABLE fator_contribuinte (
+    id_fator            INT AUTO_INCREMENT PRIMARY KEY,
+    codigo_ocorrencia   INT NOT NULL,
+    fator               VARCHAR(100),
+    area                VARCHAR(40),
+    FOREIGN KEY (codigo_ocorrencia) REFERENCES ocorrencia(codigo_ocorrencia)
+);
+
+
+===================================================
+ARQUIVO: projeto8/sql/02_queries.sql
+===================================================
+-- ranking de estados por numero de acidentes
+SELECT
+    uf_ocorrencia,
+    COUNT(*)          AS total_acidentes,
+    SUM(total_fatais) AS total_fatais,
+    RANK() OVER (ORDER BY COUNT(*) DESC) AS ranking
+FROM ocorrencia
+WHERE classificacao = 'ACIDENTE' AND uf_ocorrencia IS NOT NULL
+GROUP BY uf_ocorrencia
+ORDER BY total_acidentes DESC;
+
+
+-- acidentes por mes (sazonalidade)
+SELECT
+    MONTH(data_ocorrencia) AS mes,
+    COUNT(*)               AS total_acidentes,
+    SUM(total_fatais)      AS total_fatais
+FROM ocorrencia
+WHERE classificacao = 'ACIDENTE'
+GROUP BY MONTH(data_ocorrencia)
+ORDER BY mes;
+
+
+-- top 10 fatores humanos
+SELECT
+    f.fator,
+    COUNT(*) AS ocorrencias
+FROM ocorrencia o
+INNER JOIN fator_contribuinte f ON o.codigo_ocorrencia = f.codigo_ocorrencia
+WHERE f.area = 'HUMANO'
+GROUP BY f.fator
+ORDER BY ocorrencias DESC
+LIMIT 10;
+
+
+-- evolucao anual
+SELECT
+    YEAR(data_ocorrencia) AS ano,
+    COUNT(*)               AS total_acidentes,
+    SUM(total_fatais)      AS total_fatais
+FROM ocorrencia
+WHERE classificacao = 'ACIDENTE'
+GROUP BY YEAR(data_ocorrencia)
+ORDER BY ano;
+
+

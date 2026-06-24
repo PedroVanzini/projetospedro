@@ -1,0 +1,138 @@
+===================================================
+ARQUIVO: projeto9/.gitignore
+===================================================
+data/*.csv
+outputs/*.png
+outputs/*.csv
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+
+
+===================================================
+ARQUIVO: projeto9/README.md
+===================================================
+# Pipeline de Dados com Databricks + PySpark
+
+Projeto que fiz pra praticar PySpark e entender como funciona uma arquitetura de dados em camadas (bronze, silver e gold), usando os dados do Olist.
+
+## O que o pipeline faz
+- bronze: lê os csvs brutos e salva em parquet, sem mudar nada
+- silver: limpa, tipa as colunas certas e tira duplicados
+- gold: junta as tabelas com Spark SQL e calcula receita por estado
+
+## Tecnologias usadas
+Databricks Community Edition, PySpark, Parquet
+
+## Estrutura
+```
+projeto9/
+├── notebooks/
+│   └── pipeline_olist.py
+└── data/
+```
+
+## Como rodar
+Cria uma conta no Databricks Community Edition (é gratuito), sobe os csvs do Olist pra `/FileStore/tables/olist/raw/` e importa o notebook `pipeline_olist.py` direto no workspace.
+
+Dataset: https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
+
+
+===================================================
+ARQUIVO: projeto9/data/README.md
+===================================================
+baixa os csvs aqui: https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
+
+sobe pro databricks em: /FileStore/tables/olist/raw/
+olist_orders_dataset.csv
+olist_order_items_dataset.csv
+olist_customers_dataset.csv
+
+
+===================================================
+ARQUIVO: projeto9/notebooks/pipeline_olist.py
+===================================================
+# Databricks notebook source
+# pipeline de dados do olist em camadas (bronze / silver / gold)
+# pratica de pyspark feita no databricks community edition
+
+from pyspark.sql import functions as F
+
+BASE_PATH = "/FileStore/tables/olist"
+
+# COMMAND ----------
+
+# bronze - le os csvs brutos e salva como parquet
+
+df_orders = (
+    spark.read.option("header", True).option("inferSchema", True)
+    .csv(f"{BASE_PATH}/raw/olist_orders_dataset.csv")
+)
+
+df_items = (
+    spark.read.option("header", True).option("inferSchema", True)
+    .csv(f"{BASE_PATH}/raw/olist_order_items_dataset.csv")
+)
+
+df_customers = (
+    spark.read.option("header", True).option("inferSchema", True)
+    .csv(f"{BASE_PATH}/raw/olist_customers_dataset.csv")
+)
+
+df_orders.write.mode("overwrite").parquet(f"{BASE_PATH}/bronze/orders")
+df_items.write.mode("overwrite").parquet(f"{BASE_PATH}/bronze/items")
+df_customers.write.mode("overwrite").parquet(f"{BASE_PATH}/bronze/customers")
+
+print(df_orders.count(), df_items.count(), df_customers.count())
+
+# COMMAND ----------
+
+# silver - limpeza e tipagem
+
+orders_clean = (
+    spark.read.parquet(f"{BASE_PATH}/bronze/orders")
+    .withColumn("order_purchase_timestamp", F.to_timestamp("order_purchase_timestamp"))
+    .filter(F.col("order_status") == "delivered")
+    .dropDuplicates(["order_id"])
+)
+
+items_clean = (
+    spark.read.parquet(f"{BASE_PATH}/bronze/items")
+    .withColumn("price", F.col("price").cast("double"))
+    .dropDuplicates(["order_id", "order_item_id"])
+)
+
+customers_clean = (
+    spark.read.parquet(f"{BASE_PATH}/bronze/customers")
+    .dropDuplicates(["customer_id"])
+)
+
+orders_clean.write.mode("overwrite").parquet(f"{BASE_PATH}/silver/orders_clean")
+items_clean.write.mode("overwrite").parquet(f"{BASE_PATH}/silver/items_clean")
+customers_clean.write.mode("overwrite").parquet(f"{BASE_PATH}/silver/customers_clean")
+
+# COMMAND ----------
+
+# gold - agregacao pronta pra analise
+
+orders_clean.createOrReplaceTempView("orders")
+items_clean.createOrReplaceTempView("items")
+customers_clean.createOrReplaceTempView("customers")
+
+receita_por_estado = spark.sql("""
+    SELECT
+        c.customer_state AS estado,
+        COUNT(DISTINCT o.order_id) AS total_pedidos,
+        ROUND(SUM(i.price), 2)     AS receita_total
+    FROM orders o
+    INNER JOIN items i     ON o.order_id = i.order_id
+    INNER JOIN customers c ON o.customer_id = c.customer_id
+    GROUP BY c.customer_state
+    ORDER BY receita_total DESC
+""")
+
+display(receita_por_estado)
+
+receita_por_estado.write.mode("overwrite").parquet(f"{BASE_PATH}/gold/receita_por_estado")
+
+
