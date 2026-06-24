@@ -1,0 +1,218 @@
+===================================================
+ARQUIVO: projeto6/.gitignore
+===================================================
+data/*.csv
+outputs/*.png
+outputs/*.csv
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+
+
+===================================================
+ARQUIVO: projeto6/README.md
+===================================================
+# Análise de Vendas - E-commerce Olist
+
+Análise dos dados do Olist (marketplace brasileiro) pra responder umas perguntas simples de negócio: qual mês vendeu mais, quais estados compram mais e quanto tempo demora a entrega.
+
+## Perguntas que o projeto responde
+- Qual mês teve mais receita?
+- Quais estados compram mais?
+- Quanto tempo leva a entrega, em média, por estado?
+- Quantos pedidos foram cancelados ou entregues?
+
+## Tecnologias usadas
+MySQL e Python (Pandas + Matplotlib)
+
+## Estrutura
+```
+projeto6/
+├── sql/            queries usadas na análise
+├── scripts/        script python que faz a mesma análise
+├── data/           onde colocar os csvs (não versionado)
+└── outputs/        gráficos e csv gerados pelo script
+```
+
+## Como rodar
+Baixa o dataset no Kaggle, coloca os 3 csvs (orders, order_items, customers) dentro da pasta `data/` e roda:
+
+```
+pip install -r requirements.txt
+python scripts/analise.py
+```
+
+As queries de `sql/` também rodam direto num MySQL local, se quiser testar o mesmo resultado em SQL.
+
+Dataset: https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
+
+
+===================================================
+ARQUIVO: projeto6/data/README.md
+===================================================
+baixa os csvs aqui: https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
+
+precisa de:
+olist_orders_dataset.csv
+olist_order_items_dataset.csv
+olist_customers_dataset.csv
+
+
+===================================================
+ARQUIVO: projeto6/outputs/.gitkeep
+===================================================
+
+
+===================================================
+ARQUIVO: projeto6/requirements.txt
+===================================================
+pandas
+matplotlib
+
+
+===================================================
+ARQUIVO: projeto6/scripts/analise.py
+===================================================
+# analise de vendas - olist
+# le os csvs, junta as tabelas e calcula receita por mes e por estado
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+plt.rcParams["figure.figsize"] = (10, 5)
+
+pedidos = pd.read_csv("data/olist_orders_dataset.csv")
+itens = pd.read_csv("data/olist_order_items_dataset.csv")
+clientes = pd.read_csv("data/olist_customers_dataset.csv")
+
+pedidos["data_compra"] = pd.to_datetime(pedidos["order_purchase_timestamp"])
+pedidos["ano"] = pedidos["data_compra"].dt.year
+pedidos["mes"] = pedidos["data_compra"].dt.month
+
+entregues = pedidos[pedidos["order_status"] == "delivered"].copy()
+
+df = entregues.merge(itens, on="order_id", how="inner")
+df = df.merge(clientes, on="customer_id", how="left")
+
+# receita por mes
+mensal = (
+    df.groupby(["ano", "mes"])
+    .agg(total_pedidos=("order_id", "nunique"), receita=("price", "sum"))
+    .reset_index()
+    .sort_values(["ano", "mes"])
+)
+print(mensal)
+
+# top 10 estados
+estados = (
+    df.groupby("customer_state")
+    .agg(pedidos=("order_id", "nunique"), receita=("price", "sum"))
+    .reset_index()
+    .sort_values("receita", ascending=False)
+    .head(10)
+)
+print(estados)
+
+# graficos
+plt.bar(range(len(mensal)), mensal["receita"], color="#4a7fc1")
+plt.title("Receita mensal")
+plt.savefig("outputs/receita_mensal.png", dpi=150)
+plt.close()
+
+plt.barh(estados["customer_state"], estados["receita"], color="#5b9e6f")
+plt.gca().invert_yaxis()
+plt.title("Top 10 estados por receita")
+plt.savefig("outputs/top_estados.png", dpi=150)
+plt.close()
+
+mensal.to_csv("outputs/receita_mensal.csv", index=False)
+estados.to_csv("outputs/top_estados.csv", index=False)
+
+
+===================================================
+ARQUIVO: projeto6/sql/01_schema.sql
+===================================================
+CREATE DATABASE IF NOT EXISTS vendas_varejo;
+USE vendas_varejo;
+
+-- pedidos feitos na loja
+CREATE TABLE pedidos (
+    order_id        VARCHAR(40) PRIMARY KEY,
+    customer_id     VARCHAR(40) NOT NULL,
+    status_pedido   VARCHAR(20),
+    data_compra     DATETIME,
+    data_entrega    DATETIME
+);
+
+-- itens de cada pedido (um pedido pode ter varios itens)
+CREATE TABLE itens_pedido (
+    order_id    VARCHAR(40),
+    item_id     INT,
+    product_id  VARCHAR(40),
+    seller_id   VARCHAR(40),
+    preco       DECIMAL(10,2),
+    frete       DECIMAL(10,2),
+    PRIMARY KEY (order_id, item_id),
+    FOREIGN KEY (order_id) REFERENCES pedidos(order_id)
+);
+
+CREATE TABLE clientes (
+    customer_id  VARCHAR(40) PRIMARY KEY,
+    cidade       VARCHAR(60),
+    estado       CHAR(2)
+);
+
+
+===================================================
+ARQUIVO: projeto6/sql/02_queries.sql
+===================================================
+-- receita e pedidos por mes
+SELECT
+    YEAR(p.data_compra)            AS ano,
+    MONTH(p.data_compra)           AS mes,
+    COUNT(DISTINCT p.order_id)     AS total_pedidos,
+    ROUND(SUM(i.preco), 2)         AS receita_total,
+    ROUND(AVG(i.preco), 2)         AS ticket_medio
+FROM pedidos p
+INNER JOIN itens_pedido i ON p.order_id = i.order_id
+WHERE p.status_pedido = 'delivered'
+GROUP BY YEAR(p.data_compra), MONTH(p.data_compra)
+ORDER BY ano, mes;
+
+
+-- top 10 estados que mais compram
+SELECT
+    c.estado,
+    COUNT(DISTINCT p.order_id)  AS total_pedidos,
+    ROUND(SUM(i.preco), 2)      AS receita_total
+FROM pedidos p
+INNER JOIN itens_pedido i ON p.order_id = i.order_id
+INNER JOIN clientes c     ON p.customer_id = c.customer_id
+WHERE p.status_pedido = 'delivered'
+GROUP BY c.estado
+ORDER BY receita_total DESC
+LIMIT 10;
+
+
+-- tempo medio de entrega por estado
+SELECT
+    c.estado,
+    COUNT(DISTINCT p.order_id) AS pedidos_entregues,
+    ROUND(AVG(DATEDIFF(p.data_entrega, p.data_compra)), 1) AS media_dias_entrega
+FROM pedidos p
+INNER JOIN clientes c ON p.customer_id = c.customer_id
+WHERE p.status_pedido = 'delivered'
+  AND p.data_entrega IS NOT NULL
+GROUP BY c.estado
+ORDER BY media_dias_entrega DESC;
+
+
+-- quantidade de pedidos por status
+SELECT
+    status_pedido,
+    COUNT(*) AS quantidade
+FROM pedidos
+GROUP BY status_pedido
+ORDER BY quantidade DESC;
+
+
